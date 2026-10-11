@@ -5,7 +5,7 @@
 // the raw server HTML, which tells the site owner exactly which kind of AI tool can or cannot use it.
 
 import type { AgentAnswer, AgentStageResult, AnswerLocation, CallLog } from "../types";
-import { tfCancelAgentRun, tfGetAgentRun, tfStartAgentRun, TinyFishError } from "../tinyfish";
+import { tfCancelAgentRun, tfGetAgentRun, tfStartAgentRun, tinyfishErrorText } from "../tinyfish";
 import { parseInputUrl } from "../url";
 
 const LOCATIONS: AnswerLocation[] = ["visible_on_load", "after_scroll", "after_interaction", "other_page", "not_on_page"];
@@ -70,13 +70,12 @@ export async function startAgentStage(url: string, query: string): Promise<{ run
   try {
     const res = await tfStartAgentRun({ url: pageUrl, goal: agentGoal(pageUrl, query), output_schema: AGENT_OUTPUT_SCHEMA, browser_profile: "lite" });
     if (!res.run_id) {
-      const msg = res.error?.message || "No run_id returned";
+      const msg = tinyfishErrorText(res.error?.message || "No run_id returned", "an Agent run");
       return { runId: null, error: msg, calls: [{ endpoint: "agent", purpose: "Start answerability run", ms: Date.now() - t, ok: false, detail: msg }] };
     }
     return { runId: res.run_id, calls: [{ endpoint: "agent", purpose: "Start answerability run (run-async)", ms: Date.now() - t, ok: true, detail: res.run_id }] };
   } catch (err) {
-    const e = err as TinyFishError;
-    const msg = e.status === 402 ? "Not enough TinyFish credits for an Agent run (402)." : e.message;
+    const msg = tinyfishErrorText(err, "an Agent run");
     return { runId: null, error: msg, calls: [{ endpoint: "agent", purpose: "Start answerability run", ms: Date.now() - t, ok: false, detail: msg }] };
   }
 }
@@ -130,7 +129,7 @@ export async function pollAgentStage(runId: string, query: string): Promise<Agen
       calls.push({ endpoint: "agent", purpose: "Answerability run result", ms: Date.now() - t, ok: run.status === "COMPLETED", detail: `${run.status}, ${run.num_of_steps ?? "?"} steps` });
     }
     const answer = run.status === "COMPLETED" ? normalizeAgentResult(run.result ?? run.resultJson) : null;
-    const errText = run.error ? [run.error.message, run.error.help_message].filter(Boolean).join(" ") : "";
+    const errText = run.error ? tinyfishErrorText([run.error.message, run.error.help_message].filter(Boolean).join(" "), "the Agent run") : "";
     return {
       ok: run.status === "COMPLETED" && !!answer,
       runId,
@@ -142,7 +141,7 @@ export async function pollAgentStage(runId: string, query: string): Promise<Agen
       calls,
     };
   } catch (err) {
-    return { ok: false, runId, status: "ERROR", error: (err as Error).message, query, answer: null, calls: [] };
+    return { ok: false, runId, status: "ERROR", error: tinyfishErrorText(err, "the Agent run result"), query, answer: null, calls: [] };
   }
 }
 

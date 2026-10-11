@@ -1,7 +1,8 @@
 // Markdown export of a report, for sharing with a developer or pasting into a ticket.
 
 import type { AuditReport, Finding } from "../types";
-import { oneLineError } from "../url";
+import { oneLineError, withoutCallerInstructions } from "../url";
+import { scoreNotes } from "./scoreNotes";
 
 /** Text safe inside a Markdown table cell: one line, no column separators. */
 function cell(s: string): string {
@@ -35,6 +36,7 @@ function findingMd(f: Finding): string {
 
 export function reportToMarkdown(r: AuditReport): string {
   const s = r.scores;
+  const notes = scoreNotes(s);
   const byId = new Map(r.findings.map((f) => [f.id, f]));
   const out: string[] = [
     `# AI Page Audit: ${r.input.url}`,
@@ -43,9 +45,9 @@ export function reportToMarkdown(r: AuditReport): string {
     "",
     "## Scores",
     "",
-    `* AI readability: **${s.readability}/100**`,
+    `* AI readability: **${s.readability}/100**${notes.readability ? ` (${notes.readability})` : ""}`,
     `* Search visibility: **${s.visibility === null ? "not measured" : `${s.visibility}/100`}**`,
-    `* Answerability (AI agent): **${s.answerability.replace(/_/g, " ")}**`,
+    `* Answerability (AI agent): **${s.answerability.replace(/_/g, " ")}**${notes.answerability ? ` (${notes.answerability})` : ""}`,
     "",
     "## How readability connects to visibility",
     "",
@@ -75,7 +77,7 @@ export function reportToMarkdown(r: AuditReport): string {
     "",
     "| Endpoint | Purpose | Time | Result |",
     "| :- | :- | -: | :- |",
-    ...r.calls.map((c) => `| ${c.endpoint} | ${cell(c.purpose)} | ${(c.ms / 1000).toFixed(1)}s | ${c.ok ? "ok" : "failed"}${c.detail ? `: ${cell(oneLineError(c.detail, 300))}` : ""} |`),
+    ...r.calls.map((c) => `| ${c.endpoint} | ${cell(c.purpose)} | ${(c.ms / 1000).toFixed(1)}s | ${c.ok ? "ok" : "failed"}${c.detail ? `: ${cell(oneLineError(withoutCallerInstructions(c.detail), 300))}` : ""} |`),
     "",
   );
   return out.join("\n");

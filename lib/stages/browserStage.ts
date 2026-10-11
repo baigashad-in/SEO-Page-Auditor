@@ -5,7 +5,7 @@
 
 import { chromium, type Browser, type CDPSession, type Page, type Route } from "playwright-core";
 import type { AuditInput, BotProbe, BrowserStageResult, CallLog, HtmlFacts } from "../types";
-import { tfCreateBrowserSession, tfDeleteBrowserSession, TinyFishError } from "../tinyfish";
+import { tfCreateBrowserSession, tfDeleteBrowserSession, tinyfishErrorText, TinyFishError } from "../tinyfish";
 import { challengeReason, CHALLENGE_MAX_WORDS, htmlFacts } from "../parse/html";
 import { normForMatch, wordCount } from "../analyze/text";
 import { oneLineError, pageUrlAfterRedirect, parseInputUrl } from "../url";
@@ -138,13 +138,11 @@ export async function runBrowserStage(input: AuditInput): Promise<BrowserStageRe
     session = await tfCreateBrowserSession({ timeout_seconds: 180 });
   } catch (err) {
     const e = err as TinyFishError;
-    calls.push({ endpoint: "browser", purpose: "Create remote browser session", ms: Date.now() - t0, ok: false, detail: e.message });
     out.error =
       e.status === 404
         ? "Browser API is not enabled for this TinyFish account (404). Ask TinyFish support to enable it."
-        : e.status === 402
-          ? "Not enough TinyFish credits for a Browser session (402)."
-          : e.message;
+        : tinyfishErrorText(err, "a Browser session");
+    calls.push({ endpoint: "browser", purpose: "Create remote browser session", ms: Date.now() - t0, ok: false, detail: out.error });
     return out;
   }
   calls.push({ endpoint: "browser", purpose: "Create remote browser session", ms: Date.now() - t0, ok: true });

@@ -102,6 +102,8 @@ export interface FetchStageResult {
   sitemap: { checkedUrl: string | null; containsUrl: boolean | null; note: string };
   links: { internal: number; external: number };
   calls: CallLog[];
+  /** The Fetch API call itself failed (credits, rate limit, server error): nothing was learned about the page. */
+  error?: string;
 }
 
 /* Browser stage */
@@ -266,6 +268,8 @@ export interface Scores {
   quadrant: "readable_visible" | "readable_invisible" | "unreadable_visible" | "unreadable_invisible" | "unknown";
   readabilityParts: { label: string; score: number; max: number }[];
   visibilityParts: { label: string; score: number; max: number }[];
+  /** Stages that gave these scores no data (failed, skipped or out of credits). Absent in reports saved before v16. */
+  missingStages?: Source[];
 }
 
 export interface AuditReport {

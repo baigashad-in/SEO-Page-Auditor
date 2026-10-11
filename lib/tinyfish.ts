@@ -3,6 +3,22 @@
 // The API key is read from TINYFISH_API_KEY on the server only. It never reaches the browser.
 
 import type { Source } from "./types";
+import { oneLineError, withoutCallerInstructions } from "./url";
+
+/**
+ * A short, plain message for a failed TinyFish call, safe to show in a report. The API's own error
+ * text can be long and is written for whoever calls the API (the 402 body asks the caller to show a
+ * payment link and not to rephrase it), so reports never show it as is.
+ */
+export function tinyfishErrorText(err: unknown, what: string): string {
+  const status = err instanceof TinyFishError ? err.status : (err as { status?: number } | null)?.status;
+  if (err instanceof TinyFishError && err.code === "MISSING_API_KEY") return err.message;
+  if (status === 401) return `TinyFish did not accept the API key for ${what} (401). Check TINYFISH_API_KEY in .env.local.`;
+  if (status === 402) return `Not enough TinyFish credits for ${what} (402).`;
+  if (status === 429) return `TinyFish rate limit reached for ${what} (429). Wait a minute and re-run.`;
+  const msg = err instanceof Error ? err.message : String(err);
+  return oneLineError(withoutCallerInstructions(msg), 200);
+}
 
 const DEFAULT_HOSTS = {
   search: "https://api.search.tinyfish.ai",

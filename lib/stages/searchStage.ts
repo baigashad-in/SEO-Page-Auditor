@@ -4,7 +4,7 @@
 //   3. Competitors: Fetch the top 3 other-domain results so the report can compare what AI tools extract.
 
 import type { CallLog, CompetitorPage, SearchStageResult, SerpItem } from "../types";
-import { tfFetch, tfSearch, type RawSearchResult } from "../tinyfish";
+import { tfFetch, tfSearch, tinyfishErrorText, type RawSearchResult } from "../tinyfish";
 import { markdownStats, markdownToPlain } from "../parse/markdown";
 import { termCounts } from "../analyze/text";
 import { deriveQuery } from "../analyze/query";
@@ -100,7 +100,7 @@ export async function runSearchStage(input: SearchStageInput): Promise<SearchSta
       out.results.push(...items);
       calls.push({ endpoint: "search", purpose: `Rank check for "${query}" (page ${page + 1})`, ms: Date.now() - t, ok: true, detail: `${items.length} results` });
     } catch (err) {
-      calls.push({ endpoint: "search", purpose: `Rank check for "${query}" (page ${page + 1})`, ms: Date.now() - t, ok: false, detail: (err as Error).message });
+      calls.push({ endpoint: "search", purpose: `Rank check for "${query}" (page ${page + 1})`, ms: Date.now() - t, ok: false, detail: tinyfishErrorText(err, "Search") });
       break;
     }
     if (out.results.some((r) => isTarget(r.url))) break;
@@ -138,7 +138,7 @@ export async function runSearchStage(input: SearchStageInput): Promise<SearchSta
         detail: found ? `found at #${found.position}` : "page not returned",
       });
     } catch (err) {
-      calls.push({ endpoint: "search", purpose: "Index probe", ms: Date.now() - t, ok: false, detail: (err as Error).message });
+      calls.push({ endpoint: "search", purpose: "Index probe", ms: Date.now() - t, ok: false, detail: tinyfishErrorText(err, "Search") });
     }
   }
 
@@ -189,7 +189,7 @@ export async function runSearchStage(input: SearchStageInput): Promise<SearchSta
         };
       });
     } catch (err) {
-      calls.push({ endpoint: "fetch", purpose: "Extract competing pages", ms: Date.now() - t, ok: false, detail: (err as Error).message });
+      calls.push({ endpoint: "fetch", purpose: "Extract competing pages", ms: Date.now() - t, ok: false, detail: tinyfishErrorText(err, "Fetch") });
       out.competitors = comp.map((c) => ({ url: c.url, position: c.position, title: c.title, fetched: false, error: "fetch failed", terms: {} }));
     }
   }

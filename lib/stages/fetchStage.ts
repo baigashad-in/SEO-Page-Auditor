@@ -2,7 +2,7 @@
 // One batch call gets the page plus robots.txt, llms.txt and sitemap.xml from the same origin.
 
 import type { AuditInput, CallLog, FetchStageResult, FetchedPage, FetchFailure } from "../types";
-import { tfFetch, TinyFishError, type RawFetchResult } from "../tinyfish";
+import { tfFetch, tinyfishErrorText, type RawFetchResult } from "../tinyfish";
 import { markdownStats } from "../parse/markdown";
 import { looksLikeRobots, robotsVerdicts } from "../parse/robots";
 import { looksLikeChallengeText } from "../parse/html";
@@ -91,9 +91,10 @@ export async function runFetchStage(input: AuditInput): Promise<FetchStageResult
       detail: `${batch.results.length} ok, ${batch.errors.length} failed`,
     });
   } catch (err) {
-    const e = err as TinyFishError;
-    calls.push({ endpoint: "fetch", purpose: "Live extraction of the page", ms: Date.now() - t0, ok: false, detail: e.message });
-    result.pageError = { url: pageUrl, error: e.code || "fetch_failed" };
+    // The call itself failed (credits, rate limit, server error). That says nothing about the site,
+    // so it is recorded as a stage error, not as "AI fetch tools cannot read this page".
+    result.error = tinyfishErrorText(err, "Fetch");
+    calls.push({ endpoint: "fetch", purpose: "Live extraction of the page", ms: Date.now() - t0, ok: false, detail: result.error });
     result.robots.note = "Not checked: the Fetch call failed.";
     return result;
   }
@@ -202,7 +203,7 @@ export async function runFetchStage(input: AuditInput): Promise<FetchStageResult
         detail: smError ? `could not read: ${smError}` : undefined,
       });
     } catch (err) {
-      smError = (err as Error).message;
+      smError = tinyfishErrorText(err, "Fetch");
       calls.push({ endpoint: "fetch", purpose: "Sitemap declared in robots.txt", ms: Date.now() - t1, ok: false, detail: smError });
     }
   } else if (guessRaw?.text) {
@@ -244,7 +245,7 @@ export async function runFetchStage(input: AuditInput): Promise<FetchStageResult
                 note: `Sitemap index with ${children.length} child sitemaps. Checked ${ranked.length}, URL not found in those. Not conclusive.`,
               };
         } catch (err) {
-          calls.push({ endpoint: "fetch", purpose: "Child sitemaps", ms: Date.now() - t2, ok: false, detail: (err as Error).message });
+          calls.push({ endpoint: "fetch", purpose: "Child sitemaps", ms: Date.now() - t2, ok: false, detail: tinyfishErrorText(err, "Fetch") });
           result.sitemap = { checkedUrl: smUrl, containsUrl: null, note: "Sitemap index found, child sitemaps could not be read." };
         }
       } else {

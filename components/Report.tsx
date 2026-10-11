@@ -3,7 +3,8 @@
 import { useState } from "react";
 import type { AuditReport, Finding, Category } from "@/lib/types";
 import { reportToMarkdown } from "@/lib/analyze/markdownReport";
-import { reportFileBase, rootDomain, sameSite } from "@/lib/url";
+import { scoreNotes } from "@/lib/analyze/scoreNotes";
+import { oneLineError, reportFileBase, rootDomain, sameSite, withoutCallerInstructions } from "@/lib/url";
 
 const CATEGORY_TITLE: Record<Category, string> = {
   access: "Can AI crawlers get in?",
@@ -25,6 +26,10 @@ const ANSWER_TEXT = {
   not_answered: "Not answered",
   unknown: "Not tested",
 };
+
+function capitalize(t: string): string {
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
 
 function download(name: string, text: string, type: string) {
   const blob = new Blob([text], { type });
@@ -143,6 +148,7 @@ function Readers({ r }: { r: AuditReport }) {
 export default function Report({ report: r }: { report: AuditReport }) {
   const byId = new Map(r.findings.map((f) => [f.id, f]));
   const s = r.scores;
+  const notes = scoreNotes(s);
   const search = r.stages.search;
   const agent = r.stages.agent?.answer;
   const fetch = r.stages.fetch;
@@ -166,6 +172,7 @@ export default function Report({ report: r }: { report: AuditReport }) {
             {s.readability}
             <small>/100</small>
           </dd>
+          {notes.readability && <div className="breakdown">{capitalize(notes.readability)}</div>}
           <details className="breakdown">
             <summary>Breakdown</summary>
             {s.readabilityParts.map((p) => (
@@ -195,6 +202,7 @@ export default function Report({ report: r }: { report: AuditReport }) {
         <div>
           <dt>AI agent answer test</dt>
           <dd style={{ fontSize: "1.35rem", paddingTop: 6 }}>{ANSWER_TEXT[s.answerability]}</dd>
+          {notes.answerability && <div className="breakdown">{capitalize(notes.answerability)}</div>}
         </div>
       </dl>
       <p className="breakdown">Scores are heuristics built from the checks below, meant for comparing runs, not an external standard.</p>
@@ -411,7 +419,7 @@ export default function Report({ report: r }: { report: AuditReport }) {
                   <td className="num">{(c.ms / 1000).toFixed(1)}s</td>
                   <td className={c.ok ? "yes" : "no"}>
                     {c.ok ? "ok" : "failed"}
-                    {c.detail ? `: ${c.detail}` : ""}
+                    {c.detail ? `: ${oneLineError(withoutCallerInstructions(c.detail), 300)}` : ""}
                   </td>
                 </tr>
               ))}

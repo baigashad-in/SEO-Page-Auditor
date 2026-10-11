@@ -93,6 +93,14 @@ export function displayUrl(u: string, maxQuery = 40): string {
 }
 
 /** Error text on one line, without terminal color codes or Playwright's multi-line call log. */
+/**
+ * Drops the part of an API error that is addressed to the caller rather than describing the error
+ * (TinyFish's 402 body asks the caller to show a payment link and not to rephrase it).
+ */
+export function withoutCallerInstructions(msg: string): string {
+  return msg.replace(/\s*(?:Show the user|Pay \$|Do not retry|Then retry)[\s\S]*$/i, "");
+}
+
 export function oneLineError(msg: string, max = 200): string {
   const first = msg.replace(/\u001b\[[0-9;]*m/g, "").split(/\r?\n/)[0].trim();
   return first.length > max ? first.slice(0, max - 1) + "\u2026" : first;
