@@ -2,19 +2,20 @@
 // connection, findings, and the "do today" list.
 
 import type { AuditReport, CallLog, Scores } from "../types";
-import { agentWasBlocked, answeredOnOtherPage, blockerPhrase, buildFindings, buildStrengths, locateQuote, usableBrowser, type StageBundle } from "./findings";
+import { agentWasBlocked, answeredOnOtherPage, blockerPhrase, browserRenderIncomplete, buildFindings, buildStrengths, locateQuote, missingStages, usableStages, type StageBundle } from "./findings";
 import { markdownToPlain } from "../parse/markdown";
 import { truncate } from "./text";
-import { displayUrl, rootDomain } from "../url";
+import { bareHost, displayUrl } from "../url";
 import { AI_BOTS } from "../parse/robots";
 import { withBrowserRobots } from "./robotsSource";
+import { scoreNotes } from "./scoreNotes";
 
 function clamp(n: number, lo = 0, hi = 1) {
   return Math.max(lo, Math.min(hi, n));
 }
 
 export function computeScores(input: StageBundle): Scores {
-  const b = usableBrowser(input);
+  const b = usableStages(input);
   const f = b.fetch;
   const br = b.browser;
   const s = b.search;
@@ -38,7 +39,10 @@ export function computeScores(input: StageBundle): Scores {
 
   // 2. Works without JavaScript (25)
   if (br?.raw && br.rendered) {
-    const ratio = br.rendered.words > 0 ? br.raw.words / br.rendered.words : 1;
+    // When the browser's render missed text Fetch got, the page holds at least raw + that text.
+    const gap = browserRenderIncomplete(b);
+    const fullWords = gap ? Math.max(br.rendered.words, br.raw.words + gap.notInRaw.words) : br.rendered.words;
+    const ratio = fullWords > 0 ? br.raw.words / fullWords : 1;
     let r = 25 * clamp(ratio / 0.9);
     const js = br.onlyAfterJs;
     const titleRewritten = !!br.raw.title && !!br.rendered.title && br.raw.title.trim() !== br.rendered.title.trim();
@@ -107,14 +111,17 @@ export function computeScores(input: StageBundle): Scores {
   const quadrant: Scores["quadrant"] =
     visibility === null ? "unknown" : readability >= 60 ? (ranks ? "readable_visible" : "readable_invisible") : ranks ? "unreadable_visible" : "unreadable_invisible";
 
-  return { readability, visibility, answerability, quadrant, readabilityParts: parts, visibilityParts: vparts };
+  return { readability, visibility, answerability, quadrant, readabilityParts: parts, visibilityParts: vparts, missingStages: missingStages(input) };
 }
 
-/** "pricingsaas.com (3 pages), wikipedia.org" instead of repeating a domain once per page. */
+/**
+ * "pricingsaas.com (3 pages), en.wikipedia.org" instead of repeating a host once per page. Hosts, not
+ * root domains, so newsletter.pricingsaas.com stays apart from pricingsaas.com, as in the findings.
+ */
 export function domainList(urls: string[]): string {
   const counts = new Map<string, number>();
   for (const u of urls) {
-    const d = rootDomain(u) || u;
+    const d = bareHost(u) || u;
     counts.set(d, (counts.get(d) || 0) + 1);
   }
   return [...counts.entries()].map(([d, n]) => (n > 1 ? `${d} (${n} pages)` : d)).join(", ");
@@ -123,7 +130,7 @@ export function domainList(urls: string[]): string {
 /** Plain-English lines that tie "can AI read it" to "does it show up". Built only from observed values. */
 export function buildConnection(input: StageBundle, scores: Scores): string[] {
   const lines: string[] = [];
-  const b = usableBrowser(input);
+  const b = usableStages(input);
   const s = b.search;
   const br = b.browser;
   const f = b.fetch;
@@ -132,28 +139,30 @@ export function buildConnection(input: StageBundle, scores: Scores): string[] {
   const rawW = br?.raw?.words ?? null;
   const renW = br?.rendered?.words ?? null;
   const extW = f?.stats?.words ?? null;
+  const partial = !!scoreNotes(scores).readability;
+  const rd = `${scores.readability}/100${partial ? ", partial score" : ""}`; // inside parentheses
 
   switch (scores.quadrant) {
     case "unreadable_visible":
       lines.push(
-        `Visible but hard to read: the page ranks #${pos} for "${q}", but scores ${scores.readability}/100 on AI readability. Classic rankings do not carry over to AI answers if the answer engine's crawler cannot read the text, so this is where the fastest gains are.`,
+        `Visible but hard to read: the page ranks #${pos} for "${q}", but scores ${scores.readability}/100 on AI readability${partial ? " (partial score)" : ""}. Classic rankings do not carry over to AI answers if the answer engine's crawler cannot read the text, so this is where the fastest gains are.`,
       );
       break;
     case "readable_invisible":
       lines.push(
-        `Readable but not visible: AI tools can read this page (${scores.readability}/100), but it does not show up for "${q}". Readability is not the bottleneck; relevance, coverage and links are. Start with the visibility and content-gap findings.`,
+        `Readable but not visible: AI tools can read this page (${rd}), but it does not show up for "${q}". Readability is not the bottleneck; relevance, coverage and links are. Start with the visibility and content-gap findings.`,
       );
       break;
     case "unreadable_invisible":
       lines.push(
-        `Neither readable nor visible for "${q}" (readability ${scores.readability}/100). Fix readability first: neither search engines nor AI tools can rank or cite text they cannot read.`,
+        `Neither readable nor visible for "${q}" (readability ${rd}). Fix readability first: neither search engines nor AI tools can rank or cite text they cannot read.`,
       );
       break;
     case "readable_visible":
-      lines.push(`Readable (${scores.readability}/100) and visible${pos ? ` (#${pos})` : ""} for "${q}". The job now is to stay quotable: keep the answer early, specific and in the server HTML.`);
+      lines.push(`Readable (${rd}) and visible${pos ? ` (#${pos})` : ""} for "${q}". The job now is to stay quotable: keep the answer early, specific and in the server HTML.`);
       break;
     default:
-      lines.push(`AI readability: ${scores.readability}/100. Search visibility was not measured in this run.`);
+      lines.push(`AI readability: ${scores.readability}/100${partial ? " (partial score)" : ""}. Search visibility was not measured in this run.`);
   }
   const other = pos === null ? s?.domain.urls[0] : undefined;
   if (other) lines.push(`Another page on the same site ranks #${other.position} for "${q}" instead: ${displayUrl(other.url)}.`);
@@ -164,7 +173,14 @@ export function buildConnection(input: StageBundle, scores: Scores): string[] {
   if (f?.robots.status === "unreadable") lines.push("robots.txt came back unreadable, so whether AI crawlers are allowed is unknown from this run.");
   const rc = input.browser?.rawChallenge;
 
-  if (rc && !input.browser?.challenge) {
+  const gap = browserRenderIncomplete(b);
+  if (gap && gap.notInRaw.words >= 40 && rawW !== null && !rc) {
+    lines.push(
+      `Non-JavaScript crawlers (GPTBot, ClaudeBot, PerplexityBot) receive ${rawW} words. TinyFish Fetch extracted ${gap.fetchWords}, with ${gap.notInRaw.words} words in lines that HTML does not contain, so much of the page text arrives through JavaScript. The remote browser's render was incomplete this run (${renW} words), so Fetch's text is the better guide.`,
+    );
+  } else if (gap) {
+    lines.push(`The remote browser's render was incomplete this run: it showed ${renW} words, while Fetch extracted ${gap.fetchWords}. Browser-based checks may understate the page.`);
+  } else if (rc && !input.browser?.challenge) {
     lines.push(
       `The first HTML response is a bot challenge (${rc.reason}); a browser gets through after JavaScript runs${renW !== null ? ` and sees ${renW} words` : ""}. Crawlers that skip JavaScript (GPTBot, ClaudeBot, PerplexityBot) stop at the challenge, so those engines have nothing to index.`,
     );
@@ -257,7 +273,9 @@ export function buildReport(stages: StageBundle, input: { url: string; query?: s
         ? `TinyFish Browser received a bot challenge page${b.browser.challenge.title ? ` ("${b.browser.challenge.title}")` : ""}; browser word counts are not available.`
         : b.browser?.rawChallenge
           ? "The first HTML response was a bot challenge page, so there is no raw server HTML word count for the real page."
-          : null,
+          : browserRenderIncomplete(b)
+            ? `The remote browser's render was incomplete this run: it showed fewer words than Fetch extracted, so the rendered count understates the page.`
+            : null,
       rawWords: b.browser?.challenge || b.browser?.rawChallenge ? null : (b.browser?.raw?.words ?? null),
       renderedWords: b.browser?.challenge ? null : (b.browser?.rendered?.words ?? null),
       extractedWords: b.fetch?.stats?.words ?? null,

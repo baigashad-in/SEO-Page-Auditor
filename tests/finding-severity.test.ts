@@ -2,7 +2,8 @@
 // Cases follow live runs on Medium, Substack and tinyfish.ai.
 import { describe, expect, it } from "vitest";
 import { markdownStats } from "../lib/parse/markdown";
-import { buildFindings, fetchMissedJsContent, sortFindings, topicGaps } from "../lib/analyze/findings";
+import { browserRenderIncomplete, buildFindings, buildStrengths, fetchMissedJsContent, sortFindings, topicGaps } from "../lib/analyze/findings";
+import { buildReport } from "../lib/analyze/report";
 import type { Finding } from "../lib/types";
 import { agent, browserStage, bundle, fetchStage, LONG_TEXT, PAGE_URL, search } from "./helpers";
 
@@ -171,5 +172,51 @@ describe("order of findings with the same severity (Reddit)", () => {
   it("puts confirmed findings before quick fixes the evidence only suggests", () => {
     const sorted = sortFindings([f("robots-low", "low", "minutes"), f("agent-medium", "medium", "hours"), f("challenge-high", "high", "hours")]);
     expect(sorted.map((x) => x.id)).toEqual(["challenge-high", "agent-medium", "robots-low"]);
+  });
+});
+
+describe("a browser render that missed text Fetch got (medium.com/blog, 2026-10-11)", () => {
+  const shell = "Sign in Write Get app The Medium Blog Follow Product News Latest Newsletter Subscribe Help Status About Careers";
+  const raw = `<html><head><title>Medium</title></head><body><p>${shell}</p></body></html>`;
+  const rendered = `<html><head><title>The Medium Blog</title></head><body><p>${shell} Editor's picks</p></body></html>`;
+  const articles = [
+    "Here is what stood out at Medium Day this year, from reading and writing to sharing.",
+    "The State of Writing Report: most writers use AI in some way, but most writing happens in private.",
+    "How twelve writers are using a new social writing app to write more, and more often.",
+    "Try out custom footers on your stories, a new way to highlight the work you do.",
+  ];
+  const fetchMd = articles.join("\n\n");
+  const b = () => bundle({ fetch: fetchStage(fetchMd), browser: browserStage(raw, rendered), search: search(null), query: "medium blog" });
+
+  it("notices the gap and judges JavaScript from Fetch's text", () => {
+    expect(browserRenderIncomplete(b())).not.toBeNull();
+    const all = buildFindings(b());
+    expect(all.find((x) => x.id === "render-incomplete")).toBeDefined();
+    const js = all.find((x) => x.id === "render-js-dependent-content")!;
+    expect(js.confidence).toBe("medium");
+    expect(js.evidence[0]).toContain("in lines the raw HTML does not contain");
+  });
+
+  it("does not claim the content is in the server HTML", () => {
+    expect(buildStrengths(b()).join(" ")).not.toContain("Content is in the server HTML");
+    const r = buildReport(b(), { url: PAGE_URL, query: "medium blog" });
+    expect(r.connection.join(" ")).toContain("render was incomplete");
+    expect(r.views.blockedNote).toContain("incomplete");
+    expect(r.scores.readabilityParts.find((p) => p.label === "Works without JavaScript")!.score).toBeLessThan(15);
+  });
+
+  it("stays quiet when the rendered page holds Fetch's text (a normal page)", () => {
+    const full = `<html><head><title>The Medium Blog</title></head><body><p>${shell}</p>${articles.map((a) => `<p>${a}</p>`).join("")}</body></html>`;
+    const normal = bundle({ fetch: fetchStage(fetchMd), browser: browserStage(full, full), query: "medium blog" });
+    expect(browserRenderIncomplete(normal)).toBeNull();
+    expect(buildFindings(normal).find((x) => x.id === "render-incomplete")).toBeUndefined();
+  });
+
+  it("skips the check when the stored page text was cut at its size limit", () => {
+    const long = `<html><body><p>${LONG_TEXT.repeat(8)}</p></body></html>`;
+    // Fetch's lines are not in the stored text, which would read as a gap if the cap were ignored.
+    const capped = bundle({ fetch: fetchStage(fetchMd), browser: browserStage(long, long) });
+    expect(capped.browser!.rendered!.text.length).toBeGreaterThanOrEqual(39_900);
+    expect(browserRenderIncomplete(capped)).toBeNull();
   });
 });

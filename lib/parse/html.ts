@@ -5,7 +5,7 @@ import * as cheerio from "cheerio";
 import type { Heading, HtmlFacts, JsonLdSummary } from "../types";
 import { wordCount } from "../analyze/text";
 
-const TEXT_CAP = 40_000;
+export const TEXT_CAP = 40_000;
 
 function clean(s: string | undefined | null): string | null {
   if (s == null) return null;
