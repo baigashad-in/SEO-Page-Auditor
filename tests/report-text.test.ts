@@ -1,7 +1,7 @@
 // Text the report writes for the site owner: URLs, errors, drafts, wording taken from the page,
 // and how the agent's quote is matched. Cases follow live runs on all six demo pages.
 import { describe, expect, it } from "vitest";
-import { answeredOnOtherPage, buildFindings, pageCasing, snippetDraft, suggestDescription, withoutPageFraming } from "../lib/analyze/findings";
+import { answeredOnOtherPage, buildFindings, pageCasing, plainDashes, snippetDraft, suggestDescription, withoutPageFraming } from "../lib/analyze/findings";
 import { AGENT_OUTPUT_SCHEMA, agentGoal } from "../lib/stages/agentStage";
 import { buildReport, domainList } from "../lib/analyze/report";
 import { reportToMarkdown } from "../lib/analyze/markdownReport";
@@ -45,7 +45,8 @@ describe("URLs and errors in the report", () => {
   });
 
   it("names a domain once with a page count", () => {
-    expect(domainList(["https://pricingsaas.com/a", "https://www.pricingsaas.com/b", "https://pricingsaas.com/c", "https://en.wikipedia.org/x"])).toBe("pricingsaas.com (3 pages), wikipedia.org");
+    expect(domainList(["https://pricingsaas.com/a", "https://www.pricingsaas.com/b", "https://pricingsaas.com/c", "https://en.wikipedia.org/x"])).toBe("pricingsaas.com (3 pages), en.wikipedia.org");
+    expect(domainList(["https://newsletter.pricingsaas.com/", "https://pricingsaas.com/"])).toBe("newsletter.pricingsaas.com, pricingsaas.com");
   });
 });
 
@@ -270,5 +271,59 @@ describe("edge-block evidence (Medium blocks three AI search user-agents)", () =
     const edge = buildFindings(bundle({ fetch: fetchStage(LONG_TEXT), browser: br })).find((x) => x.evidence.some((e) => e.includes("server or CDN")))!;
     const lines = edge.evidence.filter((e) => e.startsWith("robots.txt allows"));
     expect(lines).toEqual(["robots.txt allows OAI-SearchBot, Claude-SearchBot and PerplexityBot, so this block happens at the server or CDN, not in robots.txt."]);
+  });
+});
+
+describe("scores built without every stage (TinyFish credits ran out, 2026-10-10)", () => {
+  const failed = () =>
+    browserStage("", "", { ok: false, raw: null, rendered: null, renderedInnerTextWords: 0, error: "Not enough TinyFish credits for a Browser session (402)." });
+  const noCredits = () => ({ ...agent({}), ok: false, status: "NOT_STARTED", answer: null, error: "Not enough TinyFish credits for an Agent run (402)." });
+
+  it("labels readability and answerability as partial", () => {
+    const r = buildReport(bundle({ fetch: fetchStage(LONG_TEXT), browser: failed(), agent: noCredits(), search: search(2) }), { url: PAGE_URL });
+    expect(r.scores.missingStages).toEqual(["browser", "agent"]);
+    const md = reportToMarkdown(r);
+    expect(md).toContain("(partial: Browser did not run)");
+    expect(md).toContain("(the Agent stage gave no result)");
+    expect(r.connection[0]).toContain("partial score");
+  });
+
+  it("does not call a bot challenge a missing stage (Reddit)", () => {
+    const challenged = browserStage("<html><title>Prove your humanity</title></html>", undefined, { challenge: { title: "Prove your humanity", words: 3 } });
+    const r = buildReport(bundle({ fetch: fetchStage(LONG_TEXT), browser: challenged, agent: agent({}), search: search(1) }), { url: PAGE_URL });
+    expect(r.scores.missingStages).toEqual([]);
+    expect(reportToMarkdown(r)).not.toContain("partial");
+  });
+});
+
+describe("agent quotes with a label stitched on (tinyfish.ai, 2026-10-10)", () => {
+  const fetchText = "Access the web that search can't reach. Navigate, fill forms, authenticate, return structured results. Give it a goal in plain English. It works the live site.";
+  const quote = "Multi-step web automation. Navigate, fill forms, authenticate, return structured results. Give it a goal in plain English.";
+
+  it("counts the quote as present when its full sentences are, even if the short label was dropped", () => {
+    expect(quoteAppearsIn(quote, fetchText)).toBe(true);
+  });
+
+  it("still fails when a full sentence is missing", () => {
+    expect(quoteAppearsIn("Multi-step web automation. Navigate, fill forms, authenticate, return structured results. Book a demo with our sales team today.", fetchText)).toBe(false);
+  });
+
+  it("does not report the answer as dropped by extraction", () => {
+    const raw = `<html><body><nav>TinyAgent Multi-step web automation</nav><p>${fetchText}</p><p>${LONG_TEXT}</p></body></html>`;
+    const a = agent({ evidence_quote: quote, answer_location: "visible_on_load", interactions_needed: ["Dismiss notification banner"] });
+    const all = buildFindings(bundle({ fetch: fetchStage(`${fetchText}\n\n${LONG_TEXT}`), browser: browserStage(raw), agent: a, query: "web agent api" }));
+    expect(all.find((x) => x.evidence.join(" ").includes("In TinyFish Fetch extraction: no"))).toBeUndefined();
+  });
+});
+
+describe("drafted descriptions use plain punctuation (react.dev)", () => {
+  it("turns dashes from the agent's summary into commas", () => {
+    const draft = suggestDescription("", null, "A structured path to learn React, starting with a Quick Start that covers 80% of core concepts\u2014components, JSX, styling and state.", null);
+    expect(draft).not.toMatch(/[\u2014\u2013]/);
+    expect(draft).toContain("core concepts, components");
+  });
+
+  it("keeps a numeric range readable", () => {
+    expect(plainDashes("History 2012\u20132016 and later")).toBe("History 2012-2016 and later");
   });
 });

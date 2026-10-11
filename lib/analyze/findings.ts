@@ -10,6 +10,7 @@ import type {
   FetchStageResult,
   SearchStageResult,
   Severity,
+  Source,
 } from "../types";
 import { markdownToPlain } from "../parse/markdown";
 import { containsTerm, contentTokens, normForMatch, phraseSet, queryCoverage, quoteAppearsIn, stem, truncate } from "./text";
@@ -138,7 +139,17 @@ export function withoutPageFraming(s: string): string {
   return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
+/** Dash punctuation from agent summaries ("80% of core concepts\u2014components, JSX") becomes plain punctuation. */
+export function plainDashes(s: string): string {
+  return s.replace(/\s*[\u2014\u2013]\s*(?=\S)/g, (m, off: number, all: string) => (/\d$/.test(all.slice(0, off)) && /^\s*[\u2013]\s*\d/.test(all.slice(off)) ? "-" : ", "));
+}
+
 export function suggestDescription(markdown: string, h1: string | null, agentAnswer?: string | null, searchSnippet?: string | null): string {
+  // Cleaned before drafting, so the length limit applies to the final text.
+  return draftDescription(plainDashes(markdown), h1, agentAnswer && plainDashes(agentAnswer), searchSnippet && plainDashes(searchSnippet));
+}
+
+function draftDescription(markdown: string, h1: string | null, agentAnswer?: string | null, searchSnippet?: string | null): string {
   if (agentAnswer && agentAnswer.split(/\s+/).length >= 8) return fitToLength(withoutPageFraming(agentAnswer.trim())).replace(/"/g, "'");
   // The engine's own snippet describes the page better than the first paragraph of a feed or listing.
   const snip = snippetDraft(searchSnippet);
@@ -1101,8 +1112,12 @@ function visibilityChecks(b: StageBundle, out: Finding[]) {
           category: "visibility",
           severity: "low",
           confidence: "medium",
-          title: "Search shows different text than your meta description",
-          evidence: [`Your description: "${truncate(desc, 160)}"`, `Snippet shown: "${truncate(s.target.serpSnippet, 160)}"`],
+          // Without the browser's HTML, Fetch's description may be og:description rather than the tag.
+          title: `Search shows different text than your ${b.browser?.rendered ? "meta" : "page"} description`,
+          evidence: [
+            b.browser?.rendered ? `Your meta description: "${truncate(desc, 160)}"` : `Description Fetch found (meta description or og:description): "${truncate(desc, 160)}"`,
+            `Snippet shown: "${truncate(s.target.serpSnippet, 160)}"`,
+          ],
           visibilityImpact: "The engine judged other text more relevant to the query. That text is also what AI tools are likely to quote.",
           fix: { summary: "Align the description with the query", steps: [`Rewrite the description to answer "${s.query}" directly, reusing the strongest phrases from the shown snippet.`], effort: "minutes" },
           sources: ["search", "browser"],
@@ -1442,7 +1457,7 @@ function answerabilityChecks(b: StageBundle, out: Finding[]) {
       title: "The answer appears only after a click, and crawlers never receive it",
       evidence: [
         `Agent's evidence: "${truncate(a.evidence_quote, 240)}"`,
-        `Where the agent found it: after interaction${a.interactions_needed.length ? ` (${a.interactions_needed.join(" > ")})` : ""}`,
+        `Where the agent found it: after interaction${a.interactions_needed.length ? `; steps the agent took: ${a.interactions_needed.join(" > ")}` : ""}`,
         "The text is not in the TinyFish Fetch extraction, the raw server HTML or the page as first loaded. That is expected for content loaded on click; if the agent paraphrased, this can be a false alarm.",
       ],
       visibilityImpact: "Only a browsing agent that clicks can reach this answer. Search crawlers and fetch tools quote what is in the HTML they receive.",
@@ -1494,7 +1509,7 @@ function answerabilityChecks(b: StageBundle, out: Finding[]) {
         evidence: [
           `Agent's evidence (found on the page as written): "${truncate(a.evidence_quote, 240)}"`,
           shortQuote ? `The quote is only ${quoteWords} words, so it may be a tagline or heading rather than the answer itself.` : "",
-          `Where the agent found it: ${a.answer_location.replace(/_/g, " ")}${a.interactions_needed.length ? ` (${a.interactions_needed.join(" > ")})` : ""}`,
+          `Where the agent found it: ${a.answer_location.replace(/_/g, " ")}${a.interactions_needed.length ? `; steps the agent took: ${a.interactions_needed.join(" > ")}` : ""}`,
           `In TinyFish Fetch extraction: ${inFetch === null ? "not checked" : inFetch ? "yes" : "no"}. In raw server HTML: ${inRaw === null ? "not checked" : inRaw ? "yes" : "no"}. In rendered page: ${inRendered === null ? "not checked" : inRendered ? "yes" : "no"}.`,
         ].filter(Boolean),
         visibilityImpact: hidden && crawlersHaveIt
@@ -1559,6 +1574,7 @@ function answerabilityChecks(b: StageBundle, out: Finding[]) {
 
 function stageNotes(b: StageBundle, out: Finding[]) {
   const missing: string[] = [];
+  if (fetchCallFailed(b)) missing.push(`Fetch stage failed: ${oneLineError(b.fetch!.error!)}`);
   if (b.browser && !b.browser.ok) missing.push(`Browser stage failed: ${oneLineError(b.browser.error || "unknown error")}`);
   if (b.agent && !b.agent.ok) missing.push(`Agent stage did not complete: ${oneLineError(b.agent.error || b.agent.status)}`);
   if (b.search && b.search.pagesChecked === 0) missing.push("Search stage returned no results.");
@@ -1570,6 +1586,8 @@ function stageNotes(b: StageBundle, out: Finding[]) {
     if (/timeout|timed out|did not finish/i.test(text))
       steps.push("A stage ran out of time: the page or the remote browser was slow. Re-run; slow pages often load on a second try. If it keeps happening, AI browsing agents are likely to give up on this page too.");
     if (/credit|402|404|not enabled/i.test(text)) steps.push("Check your TinyFish credits and that the Browser and Agent APIs are enabled on your account.");
+    if (/\(429\)|rate limit/i.test(text)) steps.push("Wait a minute, then re-run: TinyFish limits how many calls run per minute.");
+    if (/\(401\)|API key/i.test(text)) steps.push("Check TINYFISH_API_KEY in .env.local.");
     if (/skipped/.test(text)) steps.push("Tick the Browser and Agent boxes to run every check (they use TinyFish credits).");
     if (!steps.length) steps.push("Re-run the audit; if the same stage fails again, the error above says why.");
     out.push({
@@ -1586,9 +1604,32 @@ function stageNotes(b: StageBundle, out: Finding[]) {
   }
 }
 
-/** The browser's HTML is only usable when it is the real page, not a bot challenge. */
-export function usableBrowser(b: StageBundle): StageBundle {
-  return b.browser?.challenge ? { ...b, browser: null } : b;
+/** True when the Fetch API call failed, so the Fetch result holds nothing about the page or robots.txt. */
+export function fetchCallFailed(b: StageBundle): boolean {
+  return !!b.fetch?.error && !b.fetch.page && !b.fetch.pageError;
+}
+
+/** Stages that gave the report no data about the page (failed, skipped, out of credits), in run order. */
+export function missingStages(b: StageBundle): Source[] {
+  const out: Source[] = [];
+  if (!b.fetch || fetchCallFailed(b)) out.push("fetch");
+  // A browser that met a bot challenge did run: the challenge is the finding.
+  if (!b.browser || (!b.browser.raw && !b.browser.challenge)) out.push("browser");
+  if (!b.search || b.search.pagesChecked === 0) out.push("search");
+  if (!b.agent?.answer) out.push("agent");
+  return out;
+}
+
+/**
+ * Stage data that describes the page. The browser's HTML is dropped when it is a bot challenge, and a
+ * Fetch result is dropped when the API call itself failed (its empty robots list would otherwise read
+ * as "every crawler allowed").
+ */
+export function usableStages(b: StageBundle): StageBundle {
+  let out = b;
+  if (out.browser?.challenge) out = { ...out, browser: null };
+  if (fetchCallFailed(out)) out = { ...out, fetch: null };
+  return out;
 }
 
 function challengeChecks(b: StageBundle, out: Finding[]) {
@@ -1665,7 +1706,7 @@ function challengeChecks(b: StageBundle, out: Finding[]) {
 
 export function buildFindings(input: StageBundle): Finding[] {
   const out: Finding[] = [];
-  const b = usableBrowser(input);
+  const b = usableStages(input);
   challengeChecks(input, out);
   accessChecks(b, out);
   renderingChecks(b, out);
@@ -1682,7 +1723,7 @@ export function buildFindings(input: StageBundle): Finding[] {
 
 export function buildStrengths(input: StageBundle): string[] {
   const s: string[] = [];
-  const b = usableBrowser(input);
+  const b = usableStages(input);
   const br = b.browser;
   const f = b.fetch;
   if (f && f.robots.status !== "unreadable" && f.robots.verdicts.filter((v) => v.bot.purpose === "ai_search").every((v) => v.allowed)) s.push("robots.txt allows every AI search crawler checked (OAI-SearchBot, Claude-SearchBot, PerplexityBot, Applebot).");

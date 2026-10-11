@@ -117,16 +117,28 @@ export function normForMatch(s: string): string {
  * words are found. An agent that adds a label ("Available sections:") or changes punctuation still
  * matches; a paraphrase in different words does not.
  */
-export function quoteAppearsIn(quote: string, text: string): boolean {
+/** True when 80% of the quote's words sit in runs of three or more that also occur in the text. */
+function coveredIn(quote: string, t: string): boolean {
   const q = normForMatch(quote).split(" ").filter(Boolean);
   if (q.length === 0) return false;
-  const t = ` ${normForMatch(text)} `;
   if (q.length < 3) return t.includes(` ${q.join(" ")} `);
   const found = new Array<boolean>(q.length).fill(false);
   for (let i = 0; i + 3 <= q.length; i++) {
     if (t.includes(` ${q[i]} ${q[i + 1]} ${q[i + 2]} `)) found[i] = found[i + 1] = found[i + 2] = true;
   }
   return found.filter(Boolean).length / q.length >= 0.8;
+}
+
+export function quoteAppearsIn(quote: string, text: string): boolean {
+  const t = ` ${normForMatch(text)} `;
+  if (coveredIn(quote, t)) return true;
+  // Agents stitch short labels onto the sentences they quote ("Multi-step web automation. Navigate,
+  // fill forms, ..." on tinyfish.ai, where the label is a product tab). Extractors drop such labels
+  // as navigation, so a quote whose full sentences are all present counts as present.
+  const parts = quote.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  // A label is under five words as written ("Multi-step web automation." is three).
+  const sentences = parts.filter((s) => s.split(/\s+/).length >= 5);
+  return sentences.length > 0 && sentences.length < parts.length && sentences.every((s) => coveredIn(s, t));
 }
 
 export function firstNWords(text: string, n: number): string {
