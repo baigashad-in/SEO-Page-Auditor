@@ -1,6 +1,6 @@
 {
   "name": "ai-page-auditor",
-  "version": "18.0.0",
+  "version": "17.0.0",
   "private": true,
   "description": "Audits whether AI search and fetch tools can read a page, and how that ties to search visibility. Built on TinyFish Search, Fetch, Browser and Agent.",
   "scripts": {
