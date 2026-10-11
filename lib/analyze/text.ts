@@ -111,12 +111,6 @@ export function normForMatch(s: string): string {
     .trim();
 }
 
-/**
- * True when the quote is on the page, allowing small edits. Every 3-word run of the quote that also
- * occurs in the text marks its words as found; the quote counts as present when at least 80% of its
- * words are found. An agent that adds a label ("Available sections:") or changes punctuation still
- * matches; a paraphrase in different words does not.
- */
 /** True when 80% of the quote's words sit in runs of three or more that also occur in the text. */
 function coveredIn(quote: string, t: string): boolean {
   const q = normForMatch(quote).split(" ").filter(Boolean);
@@ -129,8 +123,23 @@ function coveredIn(quote: string, t: string): boolean {
   return found.filter(Boolean).length / q.length >= 0.8;
 }
 
+/**
+ * True when the quote is on the page, allowing small edits. Every 3-word run of the quote that also
+ * occurs in the text marks its words as found; the quote counts as present when at least 80% of its
+ * words are found. An agent that adds a label ("Available sections:") or changes punctuation still
+ * matches; a paraphrase in different words does not.
+ */
 export function quoteAppearsIn(quote: string, text: string): boolean {
+  return quoteMatcher(text)(quote);
+}
+
+/** quoteAppearsIn for many quotes against one text, normalizing the text once. */
+export function quoteMatcher(text: string): (quote: string) => boolean {
   const t = ` ${normForMatch(text)} `;
+  return (quote) => quoteInNormalized(quote, t);
+}
+
+function quoteInNormalized(quote: string, t: string): boolean {
   if (coveredIn(quote, t)) return true;
   // Agents stitch short labels onto the sentences they quote ("Multi-step web automation. Navigate,
   // fill forms, ..." on tinyfish.ai, where the label is a product tab). Extractors drop such labels

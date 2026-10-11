@@ -13,7 +13,8 @@ import type {
   Source,
 } from "../types";
 import { markdownToPlain } from "../parse/markdown";
-import { containsTerm, contentTokens, normForMatch, phraseSet, queryCoverage, quoteAppearsIn, stem, truncate } from "./text";
+import { containsTerm, contentTokens, normForMatch, phraseSet, queryCoverage, quoteAppearsIn, quoteMatcher, stem, truncate } from "./text";
+import { TEXT_CAP } from "../parse/html";
 import { bareHost, displayUrl, oneLineError, rootDomain, sameUrl } from "../url";
 import { fetchErrorHelp } from "./fetchErrors";
 import { AI_BOTS } from "../parse/robots";
@@ -577,6 +578,45 @@ export function fetchMissedJsContent(b: StageBundle): boolean {
   return words <= br.raw.words * 1.25 + 20;
 }
 
+interface MissingLines {
+  lines: string[];
+  words: number;
+}
+
+/**
+ * Lines of Fetch's text (four words or more) that the browser's rendered page and its raw HTML lack.
+ * Null when there is nothing to compare, or when the rendered text was cut at TEXT_CAP (a long page
+ * whose later lines would look missing).
+ */
+export function renderGap(b: StageBundle): { fetchWords: number; notInRendered: MissingLines; notInRaw: MissingLines } | null {
+  const br = b.browser;
+  const f = b.fetch;
+  if (!br?.raw || !br.rendered || br.challenge || br.rawChallenge || !f?.page || !f.stats) return null;
+  if (br.rendered.text.length >= TEXT_CAP - 100) return null;
+  const lines = f.page.markdown
+    .split(/\n+/)
+    .map((l) => markdownToPlain(l).replace(/\s+/g, " ").trim())
+    .filter((l) => l.split(" ").length >= 4);
+  const missing = (text: string): MissingLines => {
+    const has = quoteMatcher(text);
+    const gone = lines.filter((l) => !has(l));
+    return { lines: gone, words: gone.reduce((n, l) => n + l.split(" ").length, 0) };
+  };
+  return { fetchWords: f.stats.words, notInRendered: missing(br.rendered.text), notInRaw: missing(br.raw.text) };
+}
+
+/**
+ * The remote browser's render missed text that Fetch extracted (Medium's blog, 2026-10-11: the browser
+ * showed 53 words, Fetch 116 with the whole article list). Comparing raw HTML with that render would
+ * call the page "fine without JavaScript", so checks fall back to Fetch's text.
+ */
+export function browserRenderIncomplete(b: StageBundle): ReturnType<typeof renderGap> {
+  const g = renderGap(b);
+  return g && g.notInRendered.words >= 40 && g.notInRendered.words >= 0.3 * g.fetchWords ? g : null;
+}
+
+const quoteLines = (lines: string[]) => lines.slice(0, 3).map((l) => `"${truncate(l, 80)}"`).join(", ");
+
 function renderingChecks(b: StageBundle, out: Finding[]) {
   const br = b.browser;
   if (!br?.ok || !br.raw || !br.rendered) return;
@@ -589,8 +629,57 @@ function renderingChecks(b: StageBundle, out: Finding[]) {
   const coverage = b.query ? queryCoverage(b.query, ren.text, "", []) : null;
   const rawCoverage = b.query ? queryCoverage(b.query, raw.text, "", []) : null;
   const termsOnlyAfterJs = coverage && rawCoverage ? coverage.inText.filter((t) => !rawCoverage.inText.includes(t)) : [];
+  const gap = browserRenderIncomplete(b);
+  // Fetch saw more of the page than the browser: judge JavaScript dependence from Fetch's text instead.
+  const jsFromFetch = !!gap && gap.notInRaw.words >= 40 && gap.notInRaw.words > ren.words - raw.words;
 
-  if (ren.words >= 80 && ratio < 0.7) {
+  if (gap) {
+    out.push({
+      id: "render-incomplete",
+      category: "rendering",
+      severity: "low",
+      confidence: "medium",
+      title: `The remote browser saw less of the page than Fetch did (${ren.words} vs ${gap.fetchWords} words)`,
+      evidence: [
+        `${gap.notInRendered.words} words of Fetch's text are missing from the rendered page, for example: ${quoteLines(gap.notInRendered.lines)}`,
+        "Checks built on the rendered page (JavaScript share, headings, tags) may understate what the page shows once it fully loads, so the JavaScript check uses Fetch's text instead.",
+      ],
+      visibilityImpact:
+        "Text that loads late, or is withheld from automated browsers, is missed by AI browsing agents that read the page as it first appears.",
+      fix: {
+        summary: "Re-run, and serve this text in the first HTML response",
+        steps: [
+          "Re-run the audit: a slow or blocked request for this content can differ between runs.",
+          "If the browser keeps missing it, render this content on the server instead of loading it after the page opens.",
+        ],
+        effort: "hours",
+      },
+      sources: ["browser", "fetch"],
+    });
+  }
+
+  if (jsFromFetch) {
+    const jsOnlyWords = gap!.notInRaw.words;
+    const total = raw.words + jsOnlyWords;
+    const severity: Severity =
+      raw.emptyAppShell || raw.words < 30 || (raw.words / total < 0.3 && jsOnlyWords >= 150) ? "critical" : jsOnlyWords >= 150 ? "high" : "medium";
+    out.push({
+      id: "render-js-dependent-content",
+      category: "rendering",
+      severity,
+      confidence: "medium",
+      title: `${pct(jsOnlyWords, total)} of the page text only appears after JavaScript runs`,
+      evidence: [
+        `Raw server HTML: ${raw.words} words. TinyFish Fetch extracted ${gap!.fetchWords} words, ${jsOnlyWords} of them in lines the raw HTML does not contain, for example: ${quoteLines(gap!.notInRaw.lines)}`,
+        "The remote browser's render was incomplete this run (see that finding), so Fetch's text stands in for the rendered page.",
+        raw.frameworkHints.length ? `Detected stack: ${raw.frameworkHints.join(", ")}` : "",
+      ].filter(Boolean),
+      visibilityImpact:
+        "GPTBot, ClaudeBot and PerplexityBot fetch HTML but do not execute JavaScript (Vercel crawler study, Dec 2024). They see the raw HTML only, so this content cannot be indexed or cited by those engines. Googlebot and Gemini do render JavaScript, but later and less reliably.",
+      fix: { summary: "Put the main content in the server HTML", steps: [ssrAdvice(raw.frameworkHints), "Verify with: curl -s URL | grep \"a sentence from your page\"", "Re-run this audit; raw and rendered word counts should be close."], effort: "days" },
+      sources: ["browser", "fetch"],
+    });
+  } else if (ren.words >= 80 && ratio < 0.7) {
     // Severity follows how much text is missing, not only the ratio: 61 missing words on a 107-word
     // profile page matter less than 1,700 missing words on a blog index.
     const jsOnlyWords = ren.words - raw.words;
@@ -1727,7 +1816,7 @@ export function buildStrengths(input: StageBundle): string[] {
   const br = b.browser;
   const f = b.fetch;
   if (f && f.robots.status !== "unreadable" && f.robots.verdicts.filter((v) => v.bot.purpose === "ai_search").every((v) => v.allowed)) s.push("robots.txt allows every AI search crawler checked (OAI-SearchBot, Claude-SearchBot, PerplexityBot, Applebot).");
-  if (br?.raw && br.rendered && br.rendered.words > 0 && br.raw.words / br.rendered.words >= 0.9) s.push(`Content is in the server HTML (${br.raw.words} of ${br.rendered.words} words), so non-JavaScript AI crawlers can read it.`);
+  if (br?.raw && br.rendered && br.rendered.words > 0 && br.raw.words / br.rendered.words >= 0.9 && !browserRenderIncomplete(b)) s.push(`Content is in the server HTML (${br.raw.words} of ${br.rendered.words} words), so non-JavaScript AI crawlers can read it.`);
   const searchProbes = br?.botProbes.filter((p) => AI_BOTS.find((x) => x.token === p.bot)?.purpose !== "training") ?? [];
   if (searchProbes.length && searchProbes.every((p) => p.verdict === "ok"))
     s.push(`Requests with AI search crawler user-agents (${searchProbes.map((p) => p.bot).join(", ")}) got the same page as a normal browser.`);
